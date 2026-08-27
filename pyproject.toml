@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otscope"
+version = "0.1.0"
+description = "Passive industrial network behaviour and security profiler for PCAP/PCAPNG captures"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Swanoop Ramakrishnan"}]
+keywords = ["ot", "ics", "pcap", "modbus", "iec104", "s7", "cybersecurity"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+  "Topic :: System :: Networking :: Monitoring",
+]
+
+[project.scripts]
+otscope = "otscope.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
