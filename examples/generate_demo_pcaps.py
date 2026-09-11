@@ -17,12 +17,12 @@ def checksum(data: bytes) -> int:
     return (~total) & 0xFFFF
 
 
-def tcp_frame(src, dst, sport, dport, payload, seq=1):
+def tcp_frame(src, dst, sport, dport, payload, seq=1, flags=0x18):
     src_ip, dst_ip = socket.inet_aton(src), socket.inet_aton(dst)
-    tcp = struct.pack("!HHIIBBHHH", sport, dport, seq, 0, 5 << 4, 0x18, 8192, 0, 0)
+    tcp = struct.pack("!HHIIBBHHH", sport, dport, seq & 0xFFFFFFFF, 0, 5 << 4, flags, 8192, 0, 0)
     pseudo = src_ip + dst_ip + struct.pack("!BBH", 0, 6, len(tcp) + len(payload))
     tcp_csum = checksum(pseudo + tcp + payload)
-    tcp = struct.pack("!HHIIBBHHH", sport, dport, seq, 0, 5 << 4, 0x18, 8192, tcp_csum, 0)
+    tcp = struct.pack("!HHIIBBHHH", sport, dport, seq & 0xFFFFFFFF, 0, 5 << 4, flags, 8192, tcp_csum, 0)
     total_len = 20 + len(tcp) + len(payload)
     ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, total_len, 1, 0, 64, 6, 0, src_ip, dst_ip)
     ip = ip[:10] + struct.pack("!H", checksum(ip)) + ip[12:]
@@ -32,6 +32,11 @@ def tcp_frame(src, dst, sport, dport, payload, seq=1):
 
 def modbus_req(fc, address=0, qty=1, tid=1):
     pdu = bytes([fc]) + struct.pack("!HH", address, qty)
+    if fc == 16:
+        pdu += bytes([qty * 2]) + b"\x00\x01" * qty
+    elif fc == 15:
+        count = (qty + 7) // 8
+        pdu += bytes([count]) + b"\x00" * count
     return struct.pack("!HHHB", tid, 0, len(pdu) + 1, 1) + pdu
 
 
@@ -60,15 +65,15 @@ def write_pcap(path: Path, frames):
 def main():
     baseline = [
         tcp_frame("10.0.0.10", "10.0.0.20", 40000, 502, modbus_req(3, 0, 10, 1)),
-        tcp_frame("10.0.0.10", "10.0.0.20", 40000, 502, modbus_req(4, 20, 4, 2)),
+        tcp_frame("10.0.0.10", "10.0.0.20", 40000, 502, modbus_req(4, 20, 4, 2), seq=13),
         tcp_frame("10.0.0.30", "10.0.0.40", 41000, 2404, iec104_command(102)),
         tcp_frame("10.0.0.50", "10.0.0.60", 42000, 102, s7_job(0x04)),
     ]
     changed = baseline + [
-        tcp_frame("10.0.0.10", "10.0.0.20", 40000, 502, modbus_req(16, 100, 3, 3)),
+        tcp_frame("10.0.0.10", "10.0.0.20", 40000, 502, modbus_req(16, 100, 3, 3), seq=25),
         tcp_frame("10.0.0.77", "10.0.0.20", 43000, 502, modbus_req(6, 101, 1, 4)),
-        tcp_frame("10.0.0.30", "10.0.0.40", 41000, 2404, iec104_command(45)),
-        tcp_frame("10.0.0.50", "10.0.0.60", 42000, 102, s7_job(0x29)),
+        tcp_frame("10.0.0.30", "10.0.0.40", 41000, 2404, iec104_command(45), seq=1+len(iec104_command(102))),
+        tcp_frame("10.0.0.50", "10.0.0.60", 42000, 102, s7_job(0x29), seq=1+len(s7_job(0x04))),
     ]
     write_pcap(ROOT / "baseline_demo.pcap", baseline)
     write_pcap(ROOT / "changed_demo.pcap", changed)

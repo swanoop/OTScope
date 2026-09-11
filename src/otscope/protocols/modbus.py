@@ -25,7 +25,7 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
     if len(payload) < 8:
         return None
     transaction_id, protocol_id, length = struct.unpack("!HHH", payload[:6])
-    if protocol_id != 0 or length < 2:
+    if protocol_id != 0 or not 2 <= length <= 254 or len(payload) != length + 6:
         return None
     unit_id = payload[6]
     fc_raw = payload[7]
@@ -40,13 +40,32 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         "exception": exception,
         "access": "write" if fc in WRITE_FUNCTIONS else "read" if fc in READ_FUNCTIONS else "other",
     }
-    if exception and len(payload) >= 9:
+    if exception:
+        if request or len(payload) != 9:
+            return None
         out["exception_code"] = payload[8]
         return out
     if not request:
         return out
 
     pdu = payload[8:]
+    if fc in {1, 2, 3, 4, 5, 6} and len(pdu) != 4:
+        return None
+    if fc in {15, 16}:
+        if len(pdu) < 5:
+            return None
+        quantity = int.from_bytes(pdu[2:4], "big")
+        expected = (quantity + 7) // 8 if fc == 15 else quantity * 2
+        if quantity == 0 or pdu[4] != expected or len(pdu) != 5 + expected:
+            return None
+    if fc == 22 and len(pdu) != 6:
+        return None
+    if fc == 23:
+        if len(pdu) < 9:
+            return None
+        write_qty = int.from_bytes(pdu[6:8], "big")
+        if write_qty == 0 or pdu[8] != write_qty * 2 or len(pdu) != 9 + write_qty * 2:
+            return None
     try:
         if fc in {1, 2, 3, 4, 5, 6, 15, 16} and len(pdu) >= 4:
             address, value_or_qty = struct.unpack("!HH", pdu[:4])
@@ -66,5 +85,12 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
                 write_quantity=write_qty,
             )
     except struct.error:
-        pass
+        return None
+    for address_key, quantity_key in (("address_start", "quantity"),
+                                      ("read_address_start", "read_quantity"),
+                                      ("write_address_start", "write_quantity")):
+        if address_key in out:
+            qty = out[quantity_key]
+            if qty < 1 or out[address_key] + qty > 65536:
+                return None
     return out

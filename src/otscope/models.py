@@ -15,6 +15,9 @@ class TransportPacket:
     payload: bytes
     wire_len: int
     flags: int = 0
+    sequence: int = 0
+    frame_number: int = 0
+    interface_id: str = "0:0"
 
 
 @dataclass
@@ -48,6 +51,7 @@ class Conversation:
     first_seen: float | None = None
     last_seen: float | None = None
     semantics: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -74,6 +78,7 @@ class TimelineEvent:
     protocol: str
     summary: str
     details: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
