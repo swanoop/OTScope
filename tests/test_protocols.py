@@ -11,7 +11,7 @@ def test_modbus_read_and_write():
     assert r["address_start"] == 10
     assert r["quantity"] == 5
 
-    write = struct.pack("!HHHB", 2, 0, 6, 1) + bytes([16]) + struct.pack("!HH", 100, 3)
+    write = struct.pack("!HHHB", 2, 0, 13, 1) + bytes([16]) + struct.pack("!HH", 100, 3) + b"\x06" + b"\x00\x01" * 3
     w = modbus.parse(write, request=True)
     assert w["access"] == "write"
     assert w["address_start"] == 100

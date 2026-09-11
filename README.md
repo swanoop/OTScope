@@ -21,6 +21,7 @@ The project is being developed as a defensive analysis tool for repeatable lab t
 ## Features
 
 - Parse PCAP and PCAPNG captures directly in Python
+- Reconstruct bounded TCP streams and decode messages split across segments or combined in one segment
 - Build an observed asset inventory
 - Build a directional communication matrix
 - Identify common OT and supporting network services
@@ -30,7 +31,10 @@ The project is being developed as a defensive analysis tool for repeatable lab t
 - Save a capture as a reusable behavioural baseline
 - Compare current traffic with a baseline
 - Flag new assets, conversations, write operations, commands, and major rate changes
+- Detect new Modbus unit IDs and access to address ranges outside the baseline, scoped to unit, address space and read/write access
 - Produce a protocol-aware event timeline
+- Trace decoded operations and comparison findings to capture hashes, frame numbers and Wireshark filters
+- Report incomplete messages, TCP gaps, conflicting overlaps and optional timeline limits
 - Export JSON, CSV, and a standalone HTML report
 
 OTScope performs file analysis only. It does not transmit traffic to the systems being assessed.
@@ -103,7 +107,7 @@ Security findings
 
 ## Installation
 
-Python 3.10 or later is required. OTScope v0.1 has no third-party runtime dependencies.
+Python 3.10 or later is required. OTScope has no third-party runtime dependencies.
 
 ```bash
 git clone https://github.com/swanoop/OTScope.git
@@ -161,6 +165,14 @@ Extract the protocol timeline:
 otscope timeline examples/changed_demo.pcap -o timeline.json
 ```
 
+All decoded events are retained by default. To limit timeline memory and output size, retain only the earliest N events:
+
+```bash
+otscope analyze examples/changed_demo.pcap -o otscope-report --timeline-limit 10000
+```
+
+An explicit limit applies to timeline events only. Asset, communication and target comparison evidence is still collected. The CLI, JSON and HTML report state the total, retained and omitted event counts. Use `--timeline-limit 0` to omit timeline rows while retaining comparison evidence.
+
 ## Output
 
 A comparison report contains:
@@ -182,6 +194,8 @@ Example finding types:
 | CRITICAL | New IEC 60870-5-104 command-class ASDU |
 | CRITICAL | New S7comm write or engineering operation |
 | HIGH | New OT protocol communication relationship |
+| HIGH | Modbus write to an address range outside baseline coverage |
+| HIGH / MEDIUM | New Modbus unit ID, depending on observed write activity |
 | MEDIUM | New asset |
 | MEDIUM | New non-write protocol operation |
 | MEDIUM | Communication rate at least 3 times the baseline |
@@ -189,11 +203,15 @@ Example finding types:
 
 Severity represents investigation priority only.
 
+The HTML report includes expandable evidence for findings, capture coverage counts and a paginated timeline. Each decoded operation includes the contributing frame numbers and a Wireshark display filter for the original capture. JSON and CSV retain all selected events. The standalone `timeline` command also writes `timeline.metadata.json` with the capture hash and coverage information.
+
 ## Protocol coverage
 
 ### Modbus/TCP
 
 OTScope currently handles common read and write requests including FC01, FC02, FC03, FC04, FC05, FC06, FC15, FC16, FC22, and FC23. Where the request format allows it, the tool records the affected coil or register range.
+
+Address comparisons keep unit IDs, coils, discrete inputs, holding registers, input registers and read/write access separate. Adjacent baseline ranges are combined for comparison, so a different request size within already observed addresses does not create a target finding. Changing only the target unit or register can create a finding even when the function code stays the same. Register addresses are zero-based protocol addresses.
 
 ### IEC 60870-5-104
 
@@ -201,7 +219,7 @@ OTScope identifies I, S, and U frames. For I-frames it extracts the ASDU type, c
 
 ### S7comm
 
-OTScope recognises the S7comm header and common job functions including Read Var, Write Var, upload and download operations, PI Service, and PLC Stop. Detailed S7 variable and address decoding is planned for a later release.
+OTScope recognises S7comm carried in TPKT/COTP data messages and common job functions including Read Var, Write Var, upload and download operations, PI Service, and PLC Stop. Detailed S7 variable and address decoding is not included.
 
 ## Behavioural comparison
 
@@ -215,11 +233,27 @@ Ephemeral client ports are not part of the comparison key. This reduces false di
 
 The baseline represents observed traffic, not a complete definition of acceptable plant behaviour. A short capture may not include startup, maintenance, degraded mode, or rare safety-related operations.
 
+Version 0.2 writes schema version 2. Version 0.1 baselines remain readable, but they do not contain unit-specific address evidence. OTScope reports this limitation and skips that part of the comparison. Recreate the baseline from its original capture to enable detailed target comparisons:
+
+```bash
+otscope baseline original-baseline.pcap -o baseline-v2.json
+```
+
+## Capture coverage
+
+TCP reconstruction orders segments by sequence number within a bounded capture window and avoids counting identical retransmissions as repeated protocol operations. Separate TCP connections and PCAPNG interfaces are reconstructed independently. The tool does not fill gaps with guessed bytes. Conflicting overlaps exclude the affected buffered stream from semantic decoding; already emitted evidence from that stream requires review.
+
+The default bounds are 1 MiB per direction, 1024 tracked directions and 16 MiB of buffered payload. These bound reconstruction buffers, not the total memory used by asset, semantic and timeline records. A reused connection without an observed SYN, missing capture bytes, or late data outside the window can limit reconstruction. Coverage counters and warnings expose these conditions where observable. PCAP records or PCAPNG blocks larger than 32 MiB are rejected.
+
+The report separates total captured packets from decoded TCP/UDP packets and decoded OT messages. Traffic on a known service port is not proof that a supported protocol operation was decoded. A comparison with no findings must be interpreted with its capture coverage and operating context.
+
 ## Current limitations
 
-- TCP stream reassembly is not implemented yet
 - Protocol identification is primarily based on known service ports
-- Non-standard protocol ports require future configuration support
+- Non-standard protocol ports are not configurable
+- IP fragment reassembly and segmented COTP messages are not supported
+- Only enhanced packet blocks are accepted for PCAPNG packet data; obsolete and simple packet blocks produce an explicit error
+- Encrypted application data cannot be decoded semantically
 - Asset roles are inferred candidates, not authoritative labels
 - A baseline can only represent the conditions captured
 - High-severity findings still require engineering and operational context
@@ -242,15 +276,8 @@ src/otscope/        core package
 src/otscope/protocols/ protocol parsers
 tests/              parser and comparison tests
 examples/           synthetic capture generator and sample PCAPs
-docs/               architecture notes and roadmap
 .github/workflows/  automated tests
 ```
-
-## Roadmap
-
-Planned work includes TCP stream reassembly, better asset evidence, deeper S7 decoding, IEC 60870-5-104 select-before-operate correlation, zone and conduit analysis, additional OT protocols, and multi-source incident timeline correlation.
-
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the current development plan.
 
 ## Responsible use
 

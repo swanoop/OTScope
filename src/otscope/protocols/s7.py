@@ -19,23 +19,29 @@ WRITE_OR_ENGINEERING = {0x05, 0x1A, 0x1B, 0x1C, 0x28, 0x29}
 
 
 def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
-    # S7comm often follows TPKT + COTP. Find the protocol-id byte in a narrow range.
-    limit = min(len(payload), 24)
-    pos = -1
-    for i in range(limit):
-        if payload[i] == 0x32 and len(payload) >= i + 10:
-            pos = i
-            break
-    if pos < 0:
+    pos = 0
+    if payload.startswith(b"\x03\x00"):
+        if len(payload) < 7 or int.from_bytes(payload[2:4], "big") != len(payload):
+            return None
+        cotp_len = payload[4]
+        if cotp_len < 2 or payload[5] != 0xF0 or not payload[6] & 0x80:
+            return None
+        pos = 5 + cotp_len
+    if len(payload) < pos + 10 or payload[pos] != 0x32:
         return None
     p = payload[pos:]
     rosctr = p[1]
-    header_len = 12 if rosctr in {2, 3} and len(p) >= 12 else 10
+    if rosctr not in ROSCTR:
+        return None
+    header_len = 12 if rosctr in {2, 3} else 10
     if len(p) < header_len:
         return None
     param_len = int.from_bytes(p[6:8], "big")
+    data_len = int.from_bytes(p[8:10], "big")
+    if header_len + param_len + data_len != len(p):
+        return None
     params = p[header_len:header_len + param_len]
-    func = params[0] if params else None
+    func = params[0] if params and rosctr in {1, 3} else None
     access = "other"
     if func == 0x04:
         access = "read"

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .capture import decode_transport, read_capture
+from . import __version__
 from .models import Asset, Conversation, TimelineEvent
 from .protocols import iec104, modbus, s7
+from .reassembly import TCPReassembler
 
 OT_PORTS = {
     ("tcp", 502): "modbus",
@@ -65,22 +69,63 @@ def _role_for(protocol: str, destination_is_service: bool) -> str | None:
     }.get(protocol)
 
 
-def analyze_capture(path: str | Path, timeline_limit: int = 10_000) -> dict[str, Any]:
+def analyze_capture(path: str | Path, timeline_limit: int | None = None) -> dict[str, Any]:
+    if timeline_limit is not None and timeline_limit < 0:
+        raise ValueError("timeline_limit must be non-negative or None")
     path = Path(path)
+    capture_hash = _sha256(path)
     assets: dict[str, Asset] = {}
     conversations: dict[str, Conversation] = {}
     first_seen: float | None = None
     last_seen: float | None = None
     packet_count = 0
     decoded_count = 0
-    timeline: list[TimelineEvent] = []
+    timeline: list[tuple] = []
+    event_count = 0
+    coverage = Counter()
+    protocols_decoded = Counter()
+    reassembly = TCPReassembler()
+
+    def add_event(event: TimelineEvent) -> None:
+        nonlocal event_count
+        event_count += 1
+        item = (-event.timestamp, -event_count, event)
+        if timeline_limit is None or len(timeline) < timeline_limit:
+            heapq.heappush(timeline, item)
+        elif timeline_limit and item > timeline[0]:
+            heapq.heapreplace(timeline, item)
+
+    def consume(messages) -> None:
+        for message in messages:
+            pkt, protocol = message.packet, message.protocol
+            _, service_port = _app_protocol(pkt.transport, pkt.sport, pkt.dport)
+            key = f"{pkt.src}|{pkt.dst}|{pkt.transport}|{service_port}|{protocol}"
+            conv = conversations[key]
+            parser = {"modbus": modbus, "iec104": iec104, "s7comm": s7}[protocol]
+            sem = parser.parse(message.payload, request=pkt.dport == service_port)
+            if not sem:
+                coverage["messages_without_semantics"] += 1
+                continue
+            protocols_decoded[protocol] += 1
+            evidence = message.evidence()
+            evidence.update(capture_sha256=capture_hash, basis="decoded_message")
+            {"modbus": _merge_modbus, "iec104": _merge_iec104, "s7comm": _merge_s7}[protocol](conv.semantics, sem)
+            _remember_operation(conv.semantics, protocol, sem, evidence)
+            if sem.get("request"):
+                event = _semantic_event(evidence["first_seen"], pkt.src, pkt.dst, protocol, sem)
+                if event:
+                    event.evidence = evidence
+                    add_event(event)
 
     for raw in read_capture(path):
         packet_count += 1
         first_seen = raw.timestamp if first_seen is None else min(first_seen, raw.timestamp)
         last_seen = raw.timestamp if last_seen is None else max(last_seen, raw.timestamp)
         pkt = decode_transport(raw)
+        if len(raw.data) < raw.wire_len:
+            coverage["truncated_packets"] += 1
         if pkt is None:
+            coverage[raw.decode_issue or "non_tcp_udp_or_unsupported"] += 1
             continue
         decoded_count += 1
         protocol, service_port = _app_protocol(pkt.transport, pkt.sport, pkt.dport)
@@ -104,49 +149,53 @@ def analyze_capture(path: str | Path, timeline_limit: int = 10_000) -> dict[str,
         conv = conversations.get(key)
         if conv is None:
             conv = Conversation(pkt.src, pkt.dst, pkt.transport, service_port, protocol)
+            conv.evidence = {
+                "frame_numbers": [pkt.frame_number], "first_seen": pkt.timestamp,
+                "last_seen": pkt.timestamp, "interface_id": pkt.interface_id,
+                "capture_sha256": capture_hash, "basis": "observed_transport",
+                "wireshark_filter": f"frame.number == {pkt.frame_number}",
+            }
             conversations[key] = conv
-            if len(timeline) < timeline_limit:
-                timeline.append(TimelineEvent(
-                    pkt.timestamp,
-                    "INFO",
-                    "conversation",
-                    pkt.src,
-                    pkt.dst,
-                    protocol,
-                    f"First observed {protocol} conversation to service port {service_port}",
-                    {"service_port": service_port},
-                ))
+            add_event(TimelineEvent(
+                pkt.timestamp, "INFO", "conversation", pkt.src, pkt.dst, protocol,
+                f"First observed {protocol} conversation to service port {service_port}",
+                {"service_port": service_port}, conv.evidence,
+            ))
         conv.packets += 1
         conv.bytes += pkt.wire_len
         conv.first_seen = pkt.timestamp if conv.first_seen is None else min(conv.first_seen, pkt.timestamp)
         conv.last_seen = pkt.timestamp if conv.last_seen is None else max(conv.last_seen, pkt.timestamp)
 
-        sem: dict[str, Any] | None = None
-        if protocol == "modbus":
-            sem = modbus.parse(pkt.payload, request=(pkt.dport == 502))
-            _merge_modbus(conv.semantics, sem)
-        elif protocol == "iec104":
-            sem = iec104.parse(pkt.payload, request=(pkt.dport == 2404))
-            _merge_iec104(conv.semantics, sem)
-        elif protocol == "s7comm":
-            sem = s7.parse(pkt.payload, request=(pkt.dport == 102))
-            _merge_s7(conv.semantics, sem)
+        if protocol in {"modbus", "iec104", "s7comm"}:
+            consume(reassembly.feed(pkt, protocol))
 
-        if sem and sem.get("request") and len(timeline) < timeline_limit:
-            event = _semantic_event(pkt.timestamp, pkt.src, pkt.dst, protocol, sem)
-            if event:
-                timeline.append(event)
+    consume(reassembly.finish())
+    warnings = []
+    if coverage["truncated_packets"]:
+        warnings.append("Some packets were captured shorter than their wire length; missing bytes cannot be reconstructed.")
+    if coverage["fragmented_ip"]:
+        warnings.append("Fragmented IP packets were excluded from transport decoding; IP fragment reassembly is not supported.")
+    if reassembly.stats["gap_events"] or reassembly.stats["incomplete_regions"]:
+        warnings.append("TCP gaps or incomplete protocol messages were observed. Semantic coverage is incomplete.")
+    if reassembly.stats["conflicting_overlap_streams"]:
+        warnings.append("Conflicting TCP overlaps were observed. Affected buffered streams were excluded; any earlier findings from those streams require review.")
+    if reassembly.stats["streams_evicted"] or reassembly.stats["late_unverified_bytes"]:
+        warnings.append("TCP reconstruction limits were reached. Some stream context or late bytes could not be verified.")
+    if reassembly.stats["unframed_bytes"] or coverage["messages_without_semantics"]:
+        warnings.append("Some traffic on recognised OT ports could not be decoded as supported protocol operations.")
+    if len(timeline) < event_count:
+        warnings.append(f"Timeline limited to the earliest {len(timeline)} of {event_count} events. Re-run without --timeline-limit for a complete event export.")
 
     generated = datetime.now(timezone.utc).isoformat()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "tool": "OTScope",
-        "tool_version": "0.1.0",
+        "tool_version": __version__,
         "generated_at": generated,
         "capture": {
             "path": str(path),
             "filename": path.name,
-            "sha256": _sha256(path),
+            "sha256": capture_hash,
             "packets_total": packet_count,
             "packets_decoded_tcp_udp": decoded_count,
             "first_seen": first_seen,
@@ -155,10 +204,24 @@ def analyze_capture(path: str | Path, timeline_limit: int = 10_000) -> dict[str,
         },
         "assets": [a.to_dict() for a in sorted(assets.values(), key=lambda x: x.ip)],
         "conversations": [c.to_dict() for c in sorted(conversations.values(), key=lambda x: x.key)],
-        "timeline": [e.to_dict() for e in sorted(timeline, key=lambda x: x.timestamp)],
+        "timeline": [item[2].to_dict() for item in sorted(timeline, key=lambda x: (-x[0], -x[1]))],
+        "coverage": {
+            "packets_not_decoded_tcp_udp": packet_count - decoded_count,
+            "truncated_packets": coverage["truncated_packets"],
+            "fragmented_ip_packets": coverage["fragmented_ip"],
+            "packet_decode_exclusions": {key: value for key, value in coverage.items()
+                                          if key not in {"truncated_packets", "messages_without_semantics"}},
+            "messages_without_semantics": coverage["messages_without_semantics"],
+            "protocol_messages_decoded": dict(protocols_decoded),
+            "tcp_reassembly": dict(reassembly.stats),
+            "timeline": {"events_total": event_count, "events_retained": len(timeline),
+                         "events_omitted": event_count-len(timeline), "limit": timeline_limit},
+            "warnings": warnings,
+        },
         "limitations": [
             "Passive analysis only; OTScope does not transmit packets to target systems.",
-            "v0.1 does not perform TCP stream reassembly; protocol PDUs split across segments may not be decoded semantically.",
+            "TCP reconstruction uses a 1 MiB per-direction capture window, at most 1024 active directions and 16 MiB of buffered payload. Missing capture bytes cannot be recovered.",
+            "Messages are decoded within contiguous TCP regions. Midstream captures, late data beyond the reconstruction window, COTP segmentation and IP fragmentation can limit semantic coverage.",
             "Asset roles are evidence-based candidates inferred from observed service ports, not authoritative device identification.",
             "Encrypted application payloads cannot be semantically decoded.",
         ],
@@ -193,6 +256,7 @@ def _merge_modbus(dst: dict[str, Any], sem: dict[str, Any] | None) -> None:
     _set_add(dst, "function_codes", sem.get("function_code"))
     _set_add(dst, "unit_ids", sem.get("unit_id"))
     if sem.get("request"):
+        _set_add(dst, "request_unit_ids", sem.get("unit_id"))
         _set_add(dst, "access", sem.get("access"))
         if sem.get("access") == "write":
             _range_add(dst, "write_ranges", sem.get("address_start"), sem.get("quantity"))
@@ -201,6 +265,41 @@ def _merge_modbus(dst: dict[str, Any], sem: dict[str, Any] | None) -> None:
             _range_add(dst, "read_ranges", sem.get("address_start"), sem.get("quantity"))
         if sem.get("read_address_start") is not None:
             _range_add(dst, "read_ranges", sem.get("read_address_start"), sem.get("read_quantity"))
+
+
+def _remember_operation(dst: dict[str, Any], protocol: str, sem: dict[str, Any], evidence: dict) -> None:
+    samples = dst.setdefault("operation_evidence", {})
+    names = []
+    if protocol == "modbus":
+        names.append(f"function:{sem['function_code']}")
+    elif protocol == "iec104" and "type_id" in sem:
+        names.append(f"type:{sem['type_id']}")
+    elif protocol == "s7comm" and sem.get("function") is not None:
+        names.append(f"function:{sem['function']}")
+    if sem.get("request"):
+        names.append(sem.get("access", "other"))
+        if protocol == "modbus":
+            names.append(f"unit:{sem['unit_id']}")
+            fc = sem["function_code"]
+            space = {1: "coil", 2: "discrete_input", 3: "holding_register", 4: "input_register",
+                     5: "coil", 6: "holding_register", 15: "coil", 16: "holding_register",
+                     22: "holding_register", 23: "holding_register"}.get(fc)
+            targets = dst.setdefault("targets", [])
+            for access, address, quantity in ((sem.get("access"), sem.get("address_start"), sem.get("quantity")),
+                                               ("read", sem.get("read_address_start"), sem.get("read_quantity")),
+                                               ("write", sem.get("write_address_start"), sem.get("write_quantity"))):
+                if space and address is not None and quantity:
+                    target = {"unit_id": sem["unit_id"], "address_space": space,
+                              "access": access, "start": address, "end": address+quantity-1,
+                              "function_code": fc}
+                    existing = next((t for t in targets if all(t[k] == v for k, v in target.items())), None)
+                    if existing is None:
+                        targets.append({**target, "evidence": evidence})
+                    elif evidence["first_seen"] < existing["evidence"]["first_seen"]:
+                        existing["evidence"] = evidence
+    for name in names:
+        if name not in samples or evidence["first_seen"] < samples[name]["first_seen"]:
+            samples[name] = evidence
 
 
 def _merge_iec104(dst: dict[str, Any], sem: dict[str, Any] | None) -> None:

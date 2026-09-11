@@ -38,7 +38,7 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
     if len(payload) < 6 or payload[0] != 0x68:
         return None
     apdu_len = payload[1]
-    if apdu_len + 2 > len(payload):
+    if not 4 <= apdu_len <= 253 or apdu_len + 2 != len(payload):
         return None
     control = payload[2:6]
     if control[0] & 0x01:
@@ -46,7 +46,7 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         return {"frame_type": kind, "request": request, "access": "control"}
 
     if len(payload) < 12:
-        return {"frame_type": "I", "request": request, "access": "data"}
+        return None
     asdu = payload[6:]
     type_id = asdu[0]
     vsq = asdu[1]
