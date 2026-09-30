@@ -11,6 +11,7 @@ from typing import Any
 from .capture import decode_transport, read_capture
 from . import __version__
 from .models import Asset, Conversation, TimelineEvent
+from .policy import NetworkPolicy, PolicyEvaluator
 from .protocols import iec104, modbus, s7
 from .reassembly import TCPReassembler
 
@@ -69,11 +70,13 @@ def _role_for(protocol: str, destination_is_service: bool) -> str | None:
     }.get(protocol)
 
 
-def analyze_capture(path: str | Path, timeline_limit: int | None = None) -> dict[str, Any]:
+def analyze_capture(path: str | Path, timeline_limit: int | None = None,
+                    policy: NetworkPolicy | None = None) -> dict[str, Any]:
     if timeline_limit is not None and timeline_limit < 0:
         raise ValueError("timeline_limit must be non-negative or None")
     path = Path(path)
     capture_hash = _sha256(path)
+    evaluator = PolicyEvaluator(policy, capture_hash) if policy is not None else None
     assets: dict[str, Asset] = {}
     conversations: dict[str, Conversation] = {}
     first_seen: float | None = None
@@ -105,12 +108,16 @@ def analyze_capture(path: str | Path, timeline_limit: int | None = None) -> dict
             sem = parser.parse(message.payload, request=pkt.dport == service_port)
             if not sem:
                 coverage["messages_without_semantics"] += 1
+                if evaluator:
+                    evaluator.observe_undecoded(key)
                 continue
             protocols_decoded[protocol] += 1
             evidence = message.evidence()
             evidence.update(capture_sha256=capture_hash, basis="decoded_message")
             {"modbus": _merge_modbus, "iec104": _merge_iec104, "s7comm": _merge_s7}[protocol](conv.semantics, sem)
             _remember_operation(conv.semantics, protocol, sem, evidence)
+            if evaluator:
+                evaluator.observe_message(key, sem, evidence)
             if sem.get("request"):
                 event = _semantic_event(evidence["first_seen"], pkt.src, pkt.dst, protocol, sem)
                 if event:
@@ -156,6 +163,8 @@ def analyze_capture(path: str | Path, timeline_limit: int | None = None) -> dict
                 "wireshark_filter": f"frame.number == {pkt.frame_number}",
             }
             conversations[key] = conv
+            if evaluator:
+                evaluator.observe_flow(conv.to_dict(), pkt)
             add_event(TimelineEvent(
                 pkt.timestamp, "INFO", "conversation", pkt.src, pkt.dst, protocol,
                 f"First observed {protocol} conversation to service port {service_port}",
@@ -187,7 +196,7 @@ def analyze_capture(path: str | Path, timeline_limit: int | None = None) -> dict
         warnings.append(f"Timeline limited to the earliest {len(timeline)} of {event_count} events. Re-run without --timeline-limit for a complete event export.")
 
     generated = datetime.now(timezone.utc).isoformat()
-    return {
+    result = {
         "schema_version": 2,
         "tool": "OTScope",
         "tool_version": __version__,
@@ -226,6 +235,9 @@ def analyze_capture(path: str | Path, timeline_limit: int | None = None) -> dict
             "Encrypted application payloads cannot be semantically decoded.",
         ],
     }
+    if evaluator:
+        evaluator.finish(result)
+    return result
 
 
 def _set_add(container: dict[str, Any], key: str, value: Any) -> None:

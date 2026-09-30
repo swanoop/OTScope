@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .analyzer import analyze_capture, save_analysis
 from .compare import compare
+from .policy import load_policy
 from .report import write_outputs
 
 
@@ -51,14 +52,26 @@ def build_parser() -> argparse.ArgumentParser:
     for command in (a, b, c, t):
         command.add_argument("--timeline-limit", type=int, default=None, metavar="N",
                              help="Retain the earliest N events; default exports every decoded event")
+    for command in (a, c):
+        command.add_argument("--policy", metavar="FILE", help="Evaluate an explicit JSON network policy")
+        command.add_argument("--fail-on-policy", action="store_true",
+                             help="Exit 1 on policy violations or incomplete operation assessment; requires --policy")
+    v = sub.add_parser("validate-policy", help="Validate a JSON policy without reading a capture")
+    v.add_argument("policy")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        policy = load_policy(args.policy) if getattr(args, "policy", None) else None
+        if getattr(args, "fail_on_policy", False) and policy is None:
+            raise ValueError("--fail-on-policy requires --policy")
+        if args.command == "validate-policy":
+            print(f"Policy valid: {policy.name} (rules={len(policy.rules)} sha256={policy.sha256})")
+            return 0
         if args.command == "analyze":
-            result = analyze_capture(args.capture, timeline_limit=args.timeline_limit)
+            result = analyze_capture(args.capture, timeline_limit=args.timeline_limit, policy=policy)
             report = write_outputs(result, args.out)
             print(f"Analysed {args.capture}: {_summary(result)}")
             print(f"Report: {report}")
@@ -68,9 +81,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Baseline created: {args.out} ({_summary(result)})")
         elif args.command == "compare":
             baseline = _load(args.baseline)
-            current = analyze_capture(args.capture, timeline_limit=args.timeline_limit)
+            current = analyze_capture(args.capture, timeline_limit=args.timeline_limit, policy=policy)
             result = current
             findings = compare(baseline, current)
+            findings.extend(current.get("policy", {}).get("findings", []))
             report = write_outputs(current, args.out, findings=findings)
             critical = sum(1 for x in findings if x["severity"] == "CRITICAL")
             high = sum(1 for x in findings if x["severity"] == "HIGH")
@@ -85,6 +99,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Capture and coverage metadata: {metadata}")
         for warning in result.get("coverage", {}).get("warnings", []):
             print(f"warning: {warning}", file=sys.stderr)
+        if policy:
+            summary = result["policy"]["summary"]
+            print("Policy: " + " ".join(f"{key}={value}" for key, value in summary.items()))
+            if summary["flows_not_evaluated"] or summary["semantic_coverage_incomplete"]:
+                print("warning: Some policy operation checks could not be completed; review policy and capture coverage.",
+                      file=sys.stderr)
+            if args.fail_on_policy and (summary["findings"] or summary["flows_not_evaluated"] or
+                                        summary["semantic_coverage_incomplete"]):
+                return 1
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

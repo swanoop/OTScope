@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "name": "Synthetic lab communication policy",
+  "default_action": "deny",
+  "default_severity": "HIGH",
+  "zones": [
+    {
+      "id": "operations",
+      "name": "Operations",
+      "networks": [
+        "10.20.10.0/24"
+      ]
+    },
+    {
+      "id": "engineering",
+      "name": "Engineering",
+      "networks": [
+        "10.20.20.0/24"
+      ]
+    },
+    {
+      "id": "monitoring",
+      "name": "Monitoring",
+      "networks": [
+        "10.20.30.0/24"
+      ]
+    },
+    {
+      "id": "control",
+      "name": "Control",
+      "networks": [
+        "10.20.40.0/24"
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "id": "hmi",
+      "name": "Operator HMI",
+      "ip": "10.20.10.10",
+      "zone": "operations"
+    },
+    {
+      "id": "engineering-ws",
+      "name": "Engineering workstation",
+      "ip": "10.20.20.10",
+      "zone": "engineering"
+    },
+    {
+      "id": "historian",
+      "name": "Historian",
+      "ip": "10.20.30.10",
+      "zone": "monitoring"
+    },
+    {
+      "id": "plc",
+      "name": "Lab PLC",
+      "ip": "10.20.40.20",
+      "zone": "control"
+    }
+  ],
+  "conduits": [
+    {
+      "id": "operator-control",
+      "source_zone": "operations",
+      "destination_zone": "control"
+    },
+    {
+      "id": "engineering-control",
+      "source_zone": "engineering",
+      "destination_zone": "control"
+    },
+    {
+      "id": "monitoring-control",
+      "source_zone": "monitoring",
+      "destination_zone": "control"
+    }
+  ],
+  "rules": [
+    {
+      "id": "operator-reads",
+      "source": {
+        "asset": "hmi"
+      },
+      "destination": {
+        "asset": "plc"
+      },
+      "protocol": "modbus",
+      "transport": "tcp",
+      "service_port": 502,
+      "action": "allow",
+      "conduit": "operator-control",
+      "modbus": {
+        "function_codes": [
+          3
+        ],
+        "unit_ids": [
+          1
+        ],
+        "access": [
+          "read"
+        ],
+        "address_ranges": [
+          {
+            "space": "holding_register",
+            "access": "read",
+            "start": 0,
+            "end": 99
+          }
+        ]
+      }
+    },
+    {
+      "id": "engineering-writes",
+      "source": {
+        "asset": "engineering-ws"
+      },
+      "destination": {
+        "asset": "plc"
+      },
+      "protocol": "modbus",
+      "transport": "tcp",
+      "service_port": 502,
+      "action": "allow",
+      "conduit": "engineering-control",
+      "modbus": {
+        "function_codes": [
+          6,
+          16
+        ],
+        "unit_ids": [
+          1
+        ],
+        "access": [
+          "write"
+        ],
+        "address_ranges": [
+          {
+            "space": "holding_register",
+            "access": "write",
+            "start": 100,
+            "end": 102
+          }
+        ]
+      }
+    },
+    {
+      "id": "historian-reads",
+      "source": {
+        "asset": "historian"
+      },
+      "destination": {
+        "asset": "plc"
+      },
+      "protocol": "modbus",
+      "transport": "tcp",
+      "service_port": 502,
+      "action": "allow",
+      "conduit": "monitoring-control",
+      "modbus": {
+        "function_codes": [
+          3
+        ],
+        "unit_ids": [
+          1
+        ],
+        "access": [
+          "read"
+        ],
+        "address_ranges": [
+          {
+            "space": "holding_register",
+            "access": "read",
+            "start": 0,
+            "end": 99
+          }
+        ]
+      }
+    }
+  ]
+}

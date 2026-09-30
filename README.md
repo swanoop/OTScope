@@ -24,6 +24,9 @@ The project is being developed as a defensive analysis tool for repeatable lab t
 - Reconstruct bounded TCP streams and decode messages split across segments or combined in one segment
 - Build an observed asset inventory
 - Build a directional communication matrix
+- Label assets and group them into analyst-defined zones and directional conduits
+- Check explicit communication rules, including permitted Modbus functions, units, access types and address ranges
+- Explore an offline communication map with device, protocol and zone filters
 - Identify common OT and supporting network services
 - Extract Modbus/TCP function codes, unit IDs, access type, and register ranges
 - Extract IEC 60870-5-104 frame and ASDU information
@@ -66,43 +69,16 @@ OTScope records that change as evidence for investigation rather than declaring 
 
 ## Architecture
 
-```text
-PCAP / PCAPNG
-      |
-      v
-Capture parser
-      |
-      v
-Ethernet / IP / TCP / UDP
-      |
-      v
-Protocol classification
-      |
-      +---- Modbus/TCP
-      +---- IEC 60870-5-104
-      +---- S7comm
-      |
-      v
-Behaviour model
-      |
-      +---- assets
-      +---- conversations
-      +---- protocol semantics
-      +---- timeline events
-      |
-      +-------------------+
-      |                   |
-      v                   v
-baseline.json          reports
-      |
-      v
-Current capture
-      |
-      v
-Behaviour comparison
-      |
-      v
-Security findings
+```mermaid
+flowchart TD
+    A["PCAP / PCAPNG"] --> B["Transport and protocol decoding"]
+    B --> C["Observed behaviour model"]
+    C --> D["Baseline comparison"]
+    C --> E["Policy evaluation"]
+    P["Asset, zone and rule configuration"] --> E
+    D --> F["Evidence, map and reports"]
+    E --> F
+    C --> F
 ```
 
 ## Installation
@@ -173,18 +149,36 @@ otscope analyze examples/changed_demo.pcap -o otscope-report --timeline-limit 10
 
 An explicit limit applies to timeline events only. Asset, communication and target comparison evidence is still collected. The CLI, JSON and HTML report state the total, retained and omitted event counts. Use `--timeline-limit 0` to omit timeline rows while retaining comparison evidence.
 
+## Network policies and zones
+
+Use a JSON policy to define permitted communications independently of a baseline. A repeated operation can still violate the policy even when it is present in both captures.
+
+```bash
+python examples/generate_policy_demo.py policy-demo
+otscope validate-policy examples/lab_policy.json
+otscope analyze policy-demo/policy_changed.pcap --policy examples/lab_policy.json -o policy-demo/report
+```
+
+Open `policy-demo/report/report.html` to inspect the offline map. Search by device name or IP, filter by protocol or zone, and select a connection for its rule, findings and frame references. All map data stays in the report; no server or external scripts are needed.
+
+The same `--policy` option works with `compare`. Add `--fail-on-policy` to exit 1 after writing the report when there are violations or incomplete operation checks. Default analysis exit codes remain 0 for completion and 2 for invalid input.
+
+Rules are ordered: the first matching flow rule selects the operation constraints. Service response directions are labelled separately using ports and excluded from rule evaluation. Missing or undecoded operations are reported explicitly. A successful check does not establish whole-network coverage or standards compliance.
+
+See the [worked lab example](examples/POLICY_DEMO.md) for the expected findings and the [policy reference](docs/POLICY.md) for configuration and assessment limits.
+
 ## Output
 
-A comparison report contains:
-
-```text
-otscope-comparison/
-|-- analysis.json
-|-- findings.json
-|-- communication_matrix.csv
-|-- timeline.csv
-`-- report.html
-```
+| File | Contents |
+| --- | --- |
+| `analysis.json` | Capture, assets, conversations, timeline, coverage and optional policy assessment |
+| `findings.json` | Findings when a baseline or policy check was requested |
+| `communication_matrix.csv` | Observed directional conversations |
+| `timeline.csv` | All retained timeline events and evidence |
+| `topology.json` | Complete observed graph, including labels, policy status and associated findings |
+| `policy_findings.json` | Policy findings when a policy was supplied |
+| `zone_matrix.csv` | Named endpoints, zones, matched rules and policy status when a policy was supplied |
+| `report.html` | Standalone report with an interactive map, evidence and tables |
 
 Example finding types:
 
@@ -194,6 +188,7 @@ Example finding types:
 | CRITICAL | New IEC 60870-5-104 command-class ASDU |
 | CRITICAL | New S7comm write or engineering operation |
 | HIGH | New OT protocol communication relationship |
+| Configurable (default HIGH) | Flow or Modbus operation violates an explicit policy |
 | HIGH | Modbus write to an address range outside baseline coverage |
 | HIGH / MEDIUM | New Modbus unit ID, depending on observed write activity |
 | MEDIUM | New asset |
@@ -233,7 +228,7 @@ Ephemeral client ports are not part of the comparison key. This reduces false di
 
 The baseline represents observed traffic, not a complete definition of acceptable plant behaviour. A short capture may not include startup, maintenance, degraded mode, or rare safety-related operations.
 
-Version 0.2 writes schema version 2. Version 0.1 baselines remain readable, but they do not contain unit-specific address evidence. OTScope reports this limitation and skips that part of the comparison. Recreate the baseline from its original capture to enable detailed target comparisons:
+Versions 0.2 and 0.3 write analysis schema version 2; policy configuration and graph exports have their own schema version 1. Version 0.1 baselines remain readable, but they do not contain unit-specific address evidence. OTScope reports this limitation and skips that part of the comparison. Recreate the baseline from its original capture to enable detailed target comparisons:
 
 ```bash
 otscope baseline original-baseline.pcap -o baseline-v2.json
@@ -254,7 +249,10 @@ The report separates total captured packets from decoded TCP/UDP packets and dec
 - IP fragment reassembly and segmented COTP messages are not supported
 - Only enhanced packet blocks are accepted for PCAPNG packet data; obsolete and simple packet blocks produce an explicit error
 - Encrypted application data cannot be decoded semantically
-- Asset roles are inferred candidates, not authoritative labels
+- Asset roles are inferred candidates; configured names and zones are supplied by the analyst
+- Map arrows represent observed IP traffic, not physical wiring or verified request/response transactions
+- Policy operation restrictions currently cover Modbus; other protocols support flow rules
+- Policy checks do not schedule maintenance windows or infer operating modes
 - A baseline can only represent the conditions captured
 - High-severity findings still require engineering and operational context
 
@@ -267,7 +265,17 @@ pip install -e . pytest
 pytest -q
 ```
 
-The repository includes synthetic demonstration PCAPs so protocol parsing and comparison can be tested without using production network captures.
+The repository includes synthetic demonstration PCAPs so protocol parsing, comparison and policy evaluation can be tested without using production network captures. CI runs the core tests on Python 3.10–3.13 and the offline report checks in Chromium.
+
+To run the browser checks locally:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+pytest -q tests/browser
+```
+
+Playwright is only a development dependency. OTScope keeps its standard-library-only runtime.
 
 ## Project structure
 

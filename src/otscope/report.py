@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .topology import build_topology, topology_html
 
 
 def _ts(value: float | None) -> str:
@@ -17,11 +18,17 @@ def _ts(value: float | None) -> str:
 
 
 def write_outputs(result: dict[str, Any], out_dir: str | Path, findings: list[dict[str, Any]] | None = None) -> Path:
+    if findings is None and "policy" in result:
+        findings = result["policy"]["findings"]
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "analysis.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     if findings is not None:
         (out / "findings.json").write_text(json.dumps(findings, indent=2), encoding="utf-8")
+    (out / "topology.json").write_text(json.dumps(build_topology(result, findings), indent=2), encoding="utf-8")
+    if "policy" in result:
+        (out / "policy_findings.json").write_text(json.dumps(result["policy"]["findings"], indent=2), encoding="utf-8")
+        _write_zone_matrix(result, out / "zone_matrix.csv")
     _write_matrix(result, out / "communication_matrix.csv")
     _write_timeline(result, out / "timeline.csv")
     html_path = out / "report.html"
@@ -44,6 +51,48 @@ def _write_matrix(result: dict[str, Any], path: Path) -> None:
             })
 
 
+def _csv_label(value) -> str:
+    text = str(value or "")
+    # Analyst-provided display names must stay text when opened in a spreadsheet.
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
+
+
+def _write_zone_matrix(result: dict, path: Path) -> None:
+    fields = ["src", "source_name", "source_zone", "dst", "destination_name", "destination_zone",
+              "protocol", "transport", "service_port", "packets", "bytes", "policy_status", "rule_id", "conduit_id"]
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for conversation in result.get("conversations", []):
+            row = {key: conversation.get(key, "") for key in fields[:11]}
+            row["source_name"] = _csv_label(row["source_name"])
+            row["destination_name"] = _csv_label(row["destination_name"])
+            policy = conversation.get("policy", {})
+            row.update(policy_status=policy.get("status", ""), rule_id=policy.get("rule_id"),
+                       conduit_id=policy.get("conduit_id"))
+            writer.writerow(row)
+
+
+def _policy_html(result: dict) -> str:
+    policy = result.get("policy")
+    if not policy:
+        return ""
+    summary = policy["summary"]
+    coverage = ("Incomplete: review capture decoding warnings." if summary["semantic_coverage_incomplete"]
+                else "No capture-wide semantic coverage problems recorded.")
+    return (
+        "<h2>Policy assessment</h2>"
+        f"<p><b>{html.escape(policy['name'])}</b><br>Policy SHA-256: <code>{policy['sha256']}</code><br>"
+        f"Findings: {summary['findings']}; directions with violations: {summary['flows_with_violations']}; "
+        f"requests checked: {summary['requests_checked']}.<br>"
+        f"Directions awaiting operation assessment: {summary['flows_not_evaluated']}; "
+        f"unmatched (observe default): {summary['unmatched_flows']}; "
+        f"service response directions excluded: {summary['response_directions']}.<br>{coverage}</p>"
+        "<p><a href='policy_findings.json'>Policy findings</a> · <a href='zone_matrix.csv'>Zone communication matrix</a></p>"
+        "<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in policy["limitations"]) + "</ul>"
+    )
+
+
 def _write_timeline(result: dict[str, Any], path: Path) -> None:
     fields = ["timestamp", "severity", "category", "src", "dst", "protocol", "summary", "details", "evidence"]
     with path.open("w", newline="", encoding="utf-8") as fh:
@@ -59,7 +108,7 @@ def _write_timeline(result: dict[str, Any], path: Path) -> None:
 
 def _html_report(result: dict[str, Any], findings: list[dict[str, Any]] | None) -> str:
     cap = result.get("capture", {})
-    compared = findings is not None
+    checked = findings is not None
     findings = findings or []
     coverage = result.get("coverage", {})
     timeline_coverage = coverage.get("timeline", {})
@@ -74,15 +123,15 @@ def _html_report(result: dict[str, Any], findings: list[dict[str, Any]] | None) 
         f"<td>{html.escape(f.get('title',''))}</td><td>{html.escape(f.get('description',''))}</td>"
         f"<td><details><summary>View evidence</summary><pre>{html.escape(json.dumps(f.get('evidence',{}), indent=2))}</pre></details></td></tr>"
         for f in findings
-    ) or ("<tr><td colspan='4'>Comparison completed with no detected baseline differences. Review capture coverage below.</td></tr>" if compared else "<tr><td colspan='4'>No baseline comparison was performed.</td></tr>")
+    ) or ("<tr><td colspan='4'>No findings from the requested checks. Review capture and policy coverage.</td></tr>" if checked else "<tr><td colspan='4'>No baseline comparison or policy evaluation was performed.</td></tr>")
 
     asset_rows = "".join(
-        f"<tr><td>{html.escape(a['ip'])}</td><td>{html.escape(', '.join(a.get('protocols', [])))}</td>"
+        f"<tr><td>{html.escape(a['ip'])}</td><td>{html.escape(a.get('name', ''))}</td><td>{html.escape(a.get('zone_name', 'Unassigned'))}</td><td>{html.escape(', '.join(a.get('protocols', [])))}</td>"
         f"<td>{html.escape(', '.join(a.get('roles', [])))}</td><td>{a.get('packets_tx',0)}</td><td>{a.get('packets_rx',0)}</td></tr>"
         for a in result.get("assets", [])
     )
     conv_rows = "".join(
-        f"<tr><td>{html.escape(c['src'])}</td><td>{html.escape(c['dst'])}</td><td>{html.escape(c['protocol'])}</td>"
+        f"<tr><td>{html.escape(c.get('source_name', c['src']))}<br><small>{html.escape(c['src'])}</small></td><td>{html.escape(c.get('destination_name', c['dst']))}<br><small>{html.escape(c['dst'])}</small></td><td>{html.escape(c['protocol'])}</td>"
         f"<td>{c.get('service_port')}</td><td>{c.get('packets')}</td><td><details><summary>Protocol activity</summary><code>{html.escape(json.dumps({k: v for k, v in c.get('semantics', {}).items() if k not in {'operation_evidence', 'targets'}}, separators=(',', ':')))}</code></details></td></tr>"
         for c in result.get("conversations", [])
     )
@@ -119,8 +168,10 @@ TCP/UDP packets decoded: {cap.get('packets_decoded_tcp_udp',0)} of {cap.get('pac
 Timeline events retained: {timeline_coverage.get('events_retained',len(result.get('timeline',[])))} of {timeline_coverage.get('events_total',len(result.get('timeline',[])))}; omitted: {timeline_coverage.get('events_omitted',0)}.</p>
 {coverage_notice}
 <details><summary>Decoding and reconstruction counts</summary><pre>{html.escape(json.dumps(coverage, indent=2))}</pre></details>
-<h2>Comparison findings</h2><div class='scroll'><table><thead><tr><th>Severity</th><th>Finding</th><th>Description</th><th>Evidence</th></tr></thead><tbody>{finding_rows}</tbody></table></div>
-<h2>Assets</h2><div class='scroll'><table><thead><tr><th>IP</th><th>Protocols</th><th>Inferred roles</th><th>TX packets</th><th>RX packets</th></tr></thead><tbody>{asset_rows}</tbody></table></div>
+{_policy_html(result)}
+{topology_html(result, findings)}
+<h2>Findings</h2><div class='scroll'><table><thead><tr><th>Severity</th><th>Finding</th><th>Description</th><th>Evidence</th></tr></thead><tbody>{finding_rows}</tbody></table></div>
+<h2>Assets</h2><div class='scroll'><table><thead><tr><th>IP</th><th>Name</th><th>Zone</th><th>Protocols</th><th>Inferred roles</th><th>TX packets</th><th>RX packets</th></tr></thead><tbody>{asset_rows}</tbody></table></div>
 <h2>Communication matrix</h2><div class='scroll'><table><thead><tr><th>Source</th><th>Destination</th><th>Protocol</th><th>Port</th><th>Packets</th><th>Semantics</th></tr></thead><tbody>{conv_rows}</tbody></table></div>
 <h2>Protocol timeline</h2><p>All retained events are included in this report and in <a href='timeline.csv'>timeline.csv</a>. Capture and evidence metadata are in <a href='analysis.json'>analysis.json</a>.</p>
 <nav id='timeline-pages' aria-label='Timeline pages' hidden><button type='button' id='previous'>Previous</button><span id='page-status' aria-live='polite'></span><button type='button' id='next'>Next</button></nav>
