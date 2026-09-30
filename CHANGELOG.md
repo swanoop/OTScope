@@ -2,6 +2,16 @@
 
 All notable changes to OTScope will be recorded here.
 
+## 0.3.0
+
+- Added validated JSON policies with asset names, zones, directional conduits and ordered communication rules
+- Added per-request Modbus function, unit, access and address-range checks independent of baseline and timeline retention
+- Added policy fingerprints, matched rule IDs and bounded packet evidence to policy findings
+- Added explicit incomplete-assessment and service-response statuses, plus optional CLI failure codes
+- Added a standalone interactive communication map with filters, keyboard selection and complete graph export
+- Added policy JSON and zone matrix exports, a reproducible lab example, and Chromium report checks
+- Kept runtime dependencies limited to the Python standard library
+
 ## 0.2.0
 
 - Added bounded TCP reconstruction for split, coalesced, reordered and retransmitted OT messages
