@@ -48,7 +48,7 @@ def topology_html(result: dict, findings: list[dict] | None = None) -> str:
 _HTML = """
 <style>
 .map-controls{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:14px 0}
-.map-controls label{display:flex;flex-direction:column;gap:4px;font-size:14px}
+.map-controls label,.map-field{display:flex;flex-direction:column;gap:4px;font-size:14px}
 .map-controls input,.map-controls select,#map-select{font:inherit;padding:8px;border:1px solid #94a3b8;border-radius:5px;max-width:100%}
 .map-controls .map-check{flex-direction:row;align-items:center;padding:8px}
 .map-layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:14px}
@@ -69,8 +69,8 @@ This view does not infer switches, wiring, or authorised transactions.
 <a href="topology.json">Download the complete graph</a>.</p>
 <div class="map-controls">
 <label>Find a device<input id="map-search" type="search" placeholder="Name, IP or zone"></label>
-<label>Protocol<select id="map-protocol"><option value="">All protocols</option></select></label>
-<label>Zone<select id="map-zone"><option value="">All zones</option></select></label>
+<div class="map-field"><label for="map-protocol">Protocol</label><select id="map-protocol"><option value="">All protocols</option></select></div>
+<div class="map-field"><label for="map-zone">Zone</label><select id="map-zone"><option value="">All zones</option></select></div>
 <label class="map-check"><input id="map-cross-zone" type="checkbox">Cross-zone only</label>
 <button id="map-reset" type="button">Reset filters</button>
 </div>

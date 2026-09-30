@@ -95,3 +95,38 @@ def test_large_graph_is_bounded_with_complete_export(page, report_data, tmp_path
     assert len(json.loads((report.parent / "topology.json").read_text())["nodes"]) == 90
     page.get_by_label("Find a device").fill("10.99.0.90")
     assert page.locator(".map-node").count() == 1
+
+
+def test_protocol_and_cross_zone_filters_exclude_other_traffic(page, report_data, tmp_path):
+    flow = copy.deepcopy(report_data["conversations"][0])
+    flow.update(src="10.20.10.10", dst="10.20.10.77", protocol="http", service_port=80,
+                key="10.20.10.10|10.20.10.77|tcp|80|http")
+    flow.pop("policy")
+    report_data["conversations"].append(flow)
+    report = write_outputs(report_data, tmp_path / "report")
+    page.goto(report.as_uri())
+    assert page.locator(".map-edge").count() == 6
+    page.get_by_label("Protocol", exact=True).select_option("http")
+    assert page.locator(".map-edge").count() == 1
+    page.get_by_label("Cross-zone only").check()
+    assert page.locator(".map-edge").count() == 0
+    page.get_by_label("Protocol", exact=True).select_option("")
+    assert page.locator(".map-edge").count() == 5
+
+
+def test_map_without_policy_keeps_unassigned_devices_visible(page, report_data, tmp_path):
+    report_data.pop("policy")
+    for asset in report_data["assets"]:
+        for key in ("name", "asset_id", "zone_id", "zone_name"):
+            asset.pop(key, None)
+    for conversation in report_data["conversations"]:
+        conversation.pop("policy", None)
+    report = write_outputs(report_data, tmp_path / "report")
+    page.goto(report.as_uri())
+    assert page.locator(".map-node").count() == 5
+    page.get_by_label("Zone", exact=True).select_option("__unassigned__")
+    assert page.locator(".map-edge").count() == 5
+    page.locator("#map-select").select_option("edge:flow-0")
+    assert "No policy supplied" in page.locator("#map-details").inner_text()
+    page.get_by_label("Cross-zone only").check()
+    assert page.locator(".map-edge").count() == 0
