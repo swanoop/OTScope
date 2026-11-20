@@ -9,12 +9,15 @@ FUNCTIONS = {
     3: "Read Holding Registers",
     4: "Read Input Registers",
     5: "Write Single Coil",
+    8: "Diagnostics",
     6: "Write Single Register",
     15: "Write Multiple Coils",
+    17: "Report Server ID",
     16: "Write Multiple Registers",
     22: "Mask Write Register",
     23: "Read/Write Multiple Registers",
     43: "Encapsulated Interface Transport",
+    90: "Schneider UMAS Engineering",
 }
 
 WRITE_FUNCTIONS = {5, 6, 15, 16, 22, 23}
@@ -49,6 +52,14 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         return out
 
     pdu = payload[8:]
+    if fc == 8 and len(pdu) >= 2:
+        out["diagnostic_subfunction"] = int.from_bytes(pdu[:2], "big")
+    if fc == 43 and len(pdu) >= 2:
+        out["mei_type"] = pdu[0]
+        if pdu[0] == 14:
+            out["device_identification"] = True
+    if fc == 90:
+        out["access"] = "engineering"
     if fc in {1, 2, 3, 4, 5, 6} and len(pdu) != 4:
         return None
     if fc in {15, 16}:

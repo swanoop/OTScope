@@ -1,4 +1,4 @@
-"""Bounded, offline TCP reconstruction for the three decoded OT protocols.
+"""Bounded, offline TCP reconstruction for the decoded TCP OT protocols.
 
 Segments are ordered within a capture window before messages are emitted. A
 gap is never filled with invented bytes. Conflicting overlaps are excluded
@@ -10,6 +10,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
 from .models import TransportPacket
+from .protocols.dnp3 import frame_length as dnp3_frame_length
 
 
 @dataclass
@@ -201,7 +202,7 @@ class TCPReassembler:
     def _frame(self, protocol: str, run: Chunk, *, final: bool) -> tuple[list[Message], int]:
         data, pos, messages = run.data, 0, []
         span_index = 0
-        header_size = {"modbus": 7, "iec104": 2, "s7comm": 4}[protocol]
+        header_size = {"modbus": 7, "iec104": 2, "s7comm": 4, "s7comm-plus": 4, "dnp3": 3}[protocol]
         while pos < len(data):
             if len(data)-pos < header_size:
                 break
@@ -213,6 +214,8 @@ class TCPReassembler:
             elif protocol == "iec104":
                 if data[pos] == 0x68 and 4 <= data[pos+1] <= 253:
                     length = 2 + data[pos+1]
+            elif protocol == "dnp3":
+                length = dnp3_frame_length(bytes(data[pos:pos+3])) or 0
             elif data[pos:pos+2] == b"\x03\x00":
                 size = int.from_bytes(data[pos+2:pos+4], "big")
                 if 7 <= size <= 65535:

@@ -9,9 +9,9 @@ import pytest
 
 playwright = pytest.importorskip("playwright.sync_api")
 
-from otscope.analyzer import analyze_capture
-from otscope.policy import NetworkPolicy
-from otscope.report import write_outputs
+from otscope.analyzer import analyze_capture  # noqa: E402 - optional Playwright check precedes imports
+from otscope.policy import NetworkPolicy  # noqa: E402 - optional Playwright check precedes imports
+from otscope.report import write_outputs  # noqa: E402 - optional Playwright check precedes imports
 
 ROOT = Path(__file__).parents[2]
 

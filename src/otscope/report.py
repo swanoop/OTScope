@@ -25,6 +25,10 @@ def write_outputs(result: dict[str, Any], out_dir: str | Path, findings: list[di
     (out / "analysis.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     if findings is not None:
         (out / "findings.json").write_text(json.dumps(findings, indent=2), encoding="utf-8")
+        with (out / "findings.ndjson").open("w", encoding="utf-8") as fh, (out / "findings.ecs.ndjson").open("w", encoding="utf-8") as ecs:
+            for finding in findings:
+                fh.write(json.dumps(finding, separators=(",", ":")) + "\n")
+                ecs.write(json.dumps(_ecs_event(finding, result), separators=(",", ":")) + "\n")
     (out / "topology.json").write_text(json.dumps(build_topology(result, findings), indent=2), encoding="utf-8")
     if "policy" in result:
         (out / "policy_findings.json").write_text(json.dumps(result["policy"]["findings"], indent=2), encoding="utf-8")
@@ -34,6 +38,29 @@ def write_outputs(result: dict[str, Any], out_dir: str | Path, findings: list[di
     html_path = out / "report.html"
     html_path.write_text(_html_report(result, findings), encoding="utf-8")
     return html_path
+
+
+def _ecs_event(finding: dict, result: dict) -> dict:
+    """ECS-compatible field names, not a complete Elasticsearch ingest schema."""
+    evidence = finding.get("evidence", {})
+    out = {
+        "@timestamp": result.get("generated_at"),
+        "ecs": {"version": "8.0.0"},
+        "event": {"kind": "alert", "category": ["network", "intrusion_detection"],
+                  "type": ["indicator"], "severity": {"CRITICAL": 90, "HIGH": 70, "MEDIUM": 50,
+                                                "LOW": 30, "INFO": 10}.get(finding.get("severity"), 10),
+                  "action": finding.get("kind"), "dataset": "otscope.findings"},
+        "rule": {"name": finding.get("title")},
+        "message": finding.get("description"),
+        "tags": ["otscope", "ot", "baseline-difference"],
+        "otscope": {"severity": finding.get("severity"), "evidence": evidence,
+                    "techniques": finding.get("techniques", [])},
+    }
+    if evidence.get("src"):
+        out["source"] = {"ip": evidence["src"]}
+    if evidence.get("dst"):
+        out["destination"] = {"ip": evidence["dst"]}
+    return out
 
 
 def _write_matrix(result: dict[str, Any], path: Path) -> None:
@@ -121,9 +148,10 @@ def _html_report(result: dict[str, Any], findings: list[dict[str, Any]] | None) 
     finding_rows = "".join(
         f"<tr><td><span class='sev {html.escape(f.get('severity','INFO').lower())}'>{html.escape(f.get('severity',''))}</span></td>"
         f"<td>{html.escape(f.get('title',''))}</td><td>{html.escape(f.get('description',''))}</td>"
+        f"<td>{', '.join(html.escape(t.get('id', '')) for t in f.get('techniques', []))}</td>"
         f"<td><details><summary>View evidence</summary><pre>{html.escape(json.dumps(f.get('evidence',{}), indent=2))}</pre></details></td></tr>"
         for f in findings
-    ) or ("<tr><td colspan='4'>No findings from the requested checks. Review capture and policy coverage.</td></tr>" if checked else "<tr><td colspan='4'>No baseline comparison or policy evaluation was performed.</td></tr>")
+    ) or ("<tr><td colspan='5'>No findings from the requested checks. Review capture and policy coverage.</td></tr>" if checked else "<tr><td colspan='5'>No baseline comparison or policy evaluation was performed.</td></tr>")
 
     asset_rows = "".join(
         f"<tr><td>{html.escape(a['ip'])}</td><td>{html.escape(a.get('name', ''))}</td><td>{html.escape(a.get('zone_name', 'Unassigned'))}</td><td>{html.escape(', '.join(a.get('protocols', [])))}</td>"
@@ -170,7 +198,7 @@ Timeline events retained: {timeline_coverage.get('events_retained',len(result.ge
 <details><summary>Decoding and reconstruction counts</summary><pre>{html.escape(json.dumps(coverage, indent=2))}</pre></details>
 {_policy_html(result)}
 {topology_html(result, findings)}
-<h2>Findings</h2><div class='scroll'><table><thead><tr><th>Severity</th><th>Finding</th><th>Description</th><th>Evidence</th></tr></thead><tbody>{finding_rows}</tbody></table></div>
+<h2>Findings</h2><div class='scroll'><table><thead><tr><th>Severity</th><th>Finding</th><th>Description</th><th>ATT&CK for ICS candidates</th><th>Evidence</th></tr></thead><tbody>{finding_rows}</tbody></table></div>
 <h2>Assets</h2><div class='scroll'><table><thead><tr><th>IP</th><th>Name</th><th>Zone</th><th>Protocols</th><th>Inferred roles</th><th>TX packets</th><th>RX packets</th></tr></thead><tbody>{asset_rows}</tbody></table></div>
 <h2>Communication matrix</h2><div class='scroll'><table><thead><tr><th>Source</th><th>Destination</th><th>Protocol</th><th>Port</th><th>Packets</th><th>Semantics</th></tr></thead><tbody>{conv_rows}</tbody></table></div>
 <h2>Protocol timeline</h2><p>All retained events are included in this report and in <a href='timeline.csv'>timeline.csv</a>. Capture and evidence metadata are in <a href='analysis.json'>analysis.json</a>.</p>

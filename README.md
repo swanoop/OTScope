@@ -3,12 +3,17 @@
 Passive Industrial Network Behaviour and Security Profiler
 
 ![Tests](https://github.com/swanoop/OTScope/actions/workflows/tests.yml/badge.svg)
+![Unit-test coverage at the v0.4.0 update](docs/coverage.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 OTScope is a passive Python tool for analysing packet captures from industrial networks. It builds a model of observed assets and communications, extracts protocol-level activity, and compares later captures against a known-good baseline.
 
-The current release supports PCAP and PCAPNG files, Modbus/TCP, IEC 60870-5-104, and common S7comm operations.
+The development build supports PCAP and PCAPNG files, Modbus/TCP, IEC 60870-5-104, single-fragment CRC-validated DNP3 application operations, and common S7comm operations. S7comm-Plus is identified but its application operations are **not** decoded.
+
+![Example offline OTScope communication map and evidence findings](docs/report-map-preview.png)
+
+*Offline report preview, generated from the synthetic example captures. The actual HTML map is interactive.*
 
 > OTScope is an early-stage defensive assessment tool. Findings identify behaviour worth investigating. They do not prove malicious activity.
 
@@ -29,18 +34,43 @@ The project is being developed as a defensive analysis tool for repeatable lab t
 - Explore an offline communication map with device, protocol and zone filters
 - Identify common OT and supporting network services
 - Extract Modbus/TCP function codes, unit IDs, access type, and register ranges
-- Extract IEC 60870-5-104 frame and ASDU information
-- Identify common S7comm read, write, upload, download, and PLC control functions
+- Extract IEC 60870-5-104 frame, ASDU and cause-of-transmission information; distinguish control activation, interrogation/clock/test operations, resets, and confirmations
+- Identify common S7comm read, write, upload, download, Userdata/CPU operations, and PLC control functions; label S7comm-Plus as present but not decoded
+- Decode CRC-valid single-fragment DNP3 read/control/restart/file operation codes (TCP or UDP); explicitly mark segmented application messages as not decoded
+- Flag Modbus FC8 Force Listen Only, FC17 and FC43/14 identification operations, and FC90 engineering access
 - Save a capture as a reusable behavioural baseline
-- Compare current traffic with a baseline
+- Compare current traffic with a baseline, including lost relationships when both endpoints are still active and major rate decreases
+- Merge independent known-good capture summaries using `otscope baseline merge a.json b.json -o merged.json`
+- Profile request timing per function/target and flag changes to regular polling rhythms
+- Track observed FC5/FC6 write-value envelopes per address (not engineering-approved safety limits)
 - Flag new assets, conversations, write operations, commands, and major rate changes
 - Detect new Modbus unit IDs and access to address ranges outside the baseline, scoped to unit, address space and read/write access
 - Produce a protocol-aware event timeline
 - Trace decoded operations and comparison findings to capture hashes, frame numbers and Wireshark filters
 - Report incomplete messages, TCP gaps, conflicting overlaps and optional timeline limits
-- Export JSON, CSV, and a standalone HTML report
+- Export JSON, CSV, line-delimited JSON findings, ECS-style JSON Lines and a standalone HTML report with candidate MITRE ATT&CK for ICS mappings
 
 OTScope performs file analysis only. It does not transmit traffic to the systems being assessed.
+
+## Quick upgrade examples
+
+```bash
+# Analyze Modbus on a non-default lab port
+otscope analyze lab.pcap --port-map modbus=5020 -o report
+
+# Build a multi-capture baseline without mixing cross-capture timing gaps
+otscope baseline shift-a.pcap -o shift-a.json
+otscope baseline shift-b.pcap -o shift-b.json
+otscope baseline merge shift-a.json shift-b.json -o combined.json
+otscope compare combined.json maintenance-window.pcap -o investigation
+
+# Investigate in your browser: investigation/report.html
+# SIEM ingest: investigation/findings.ndjson or findings.ecs.ndjson
+```
+
+The `findings.ecs.ndjson` export uses ECS-style field names; validate against your chosen Elastic or Splunk pipeline before production ingestion. Candidate ATT&CK mappings do **not** attribute malicious intent. A missing conversation may indicate capture placement, scheduling or normal maintenance rather than an outage.
+
+See [protocol coverage and evidence limits](docs/PROTOCOL_COVERAGE.md), and [RailCAN/OTScope field notes](docs/RAILCAN_FIELD_NOTES.md).
 
 ## Why OTScope
 
