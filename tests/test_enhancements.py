@@ -156,7 +156,8 @@ def test_baseline_merge_preserves_union_and_value_bounds(tmp_path):
     assert sem["write_value_ranges"]["1:holding_register:7"] == {"min": 5, "max": 40, "samples": 7}
     assert len(joined["baseline_sources"]) == 2
     aa, bb = tmp_path/'a.json', tmp_path/'b.json'
-    aa.write_text(json.dumps(a)); bb.write_text(json.dumps(b))
+    aa.write_text(json.dumps(a))
+    bb.write_text(json.dumps(b))
     merged_file = tmp_path/'out.json'
     assert main(["baseline", "merge", str(aa), str(bb), "-o", str(merged_file)]) == 0
     assert merged_file.exists()
