@@ -6,9 +6,9 @@ import struct
 import pytest
 
 hypothesis = pytest.importorskip("hypothesis")
-from hypothesis import given, settings, strategies as st
-from otscope.protocols import dnp3, iec104, modbus, s7
-from otscope.analyzer import _app_protocol
+from hypothesis import given, settings, strategies as st  # noqa: E402 - optional Hypothesis check precedes imports
+from otscope.protocols import dnp3, iec104, modbus, s7  # noqa: E402 - optional Hypothesis check precedes imports
+from otscope.analyzer import _app_protocol  # noqa: E402 - optional Hypothesis check precedes imports
 
 
 @settings(max_examples=250, deadline=None)
