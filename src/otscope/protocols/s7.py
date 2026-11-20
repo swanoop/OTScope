@@ -62,7 +62,7 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         "rosctr": rosctr,
         "rosctr_name": ROSCTR.get(rosctr, f"rosctr_{rosctr}"),
         "function": func,
-        "function_name": FUNCTIONS.get(func, f"Function 0x{func:02x}" if func is not None else "Unknown"),
+        "function_name": FUNCTIONS.get(func, f"Function 0x{func:02x}") if func is not None else "Unknown",
         "request": request,
         "access": access,
     }
