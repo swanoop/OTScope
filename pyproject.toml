@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "otscope"
-version = "0.3.0"
+version = "0.4.0"
 description = "Passive industrial network behaviour and security profiler for PCAP/PCAPNG captures"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,9 +13,19 @@ authors = [{name = "Swanoop Ramakrishnan"}]
 keywords = ["ot", "ics", "pcap", "modbus", "iec104", "s7", "cybersecurity"]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
   "Topic :: Security",
   "Topic :: System :: Networking :: Monitoring",
 ]
+
+[project.urls]
+Homepage = "https://github.com/swanoop/OTScope"
+Repository = "https://github.com/swanoop/OTScope"
+Issues = "https://github.com/swanoop/OTScope/issues"
+Changelog = "https://github.com/swanoop/OTScope/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.8", "mypy>=1.10"]
 
 [project.scripts]
 otscope = "otscope.cli:main"

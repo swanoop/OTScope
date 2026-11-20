@@ -1,3 +1,13 @@
+## Unreleased (v0.4.0 development)
+
+- Detect disappeared baseline conversations when both endpoints remain observed, and directional rate decreases.
+- Split IEC-104 control activations, system operations, reset process and confirmations by COT; correlate reverse-direction confirmation evidence as a candidate, without double-critical alerts.
+- Add CRC-validated DNP3 link/application function decoding for complete single-fragment messages. Segmented DNP3 application operations are explicitly undecoded.
+- Add Modbus diagnostics, identification and FC90 engineering classification; S7 Userdata group classification and S7comm-Plus recognition-only coverage.
+- Introduce payload hints, repeatable `--port-map`, request timing profiles, observed single-write value ranges, and multi-capture baseline merging.
+- Include candidate ATT&CK for ICS mappings in JSON and HTML, plus NDJSON and ECS-style exports.
+- Add parser fuzz tests for CI, development tooling checks, and report image preview. PyPI release remains to be configured and published.
+
 # Changelog
 
 All notable changes to OTScope will be recorded here.
