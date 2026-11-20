@@ -27,6 +27,11 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         if cotp_len < 2 or payload[5] != 0xF0 or not payload[6] & 0x80:
             return None
         pos = 5 + cotp_len
+    if len(payload) < pos + 1:
+        return None
+    if payload[pos] == 0x72:
+        return {"protocol_variant": "s7comm-plus", "decode_status": "present_not_decoded",
+                "access": "undecoded", "request": request}
     if len(payload) < pos + 10 or payload[pos] != 0x32:
         return None
     p = payload[pos:]
@@ -42,12 +47,18 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         return None
     params = p[header_len:header_len + param_len]
     func = params[0] if params and rosctr in {1, 3} else None
+    userdata_group = (params[2] & 0x0F) if rosctr == 7 and len(params) >= 4 else None
+    userdata_subfunction = params[3] if rosctr == 7 and len(params) >= 4 else None
     access = "other"
     if func == 0x04:
         access = "read"
     elif func in WRITE_OR_ENGINEERING:
         access = "engineering" if func != 0x05 else "write"
+    if rosctr == 7:
+        access = "reconnaissance" if userdata_group == 4 else "userdata"
     return {
+        "userdata_group": userdata_group,
+        "userdata_subfunction": userdata_subfunction,
         "rosctr": rosctr,
         "rosctr_name": ROSCTR.get(rosctr, f"rosctr_{rosctr}"),
         "function": func,

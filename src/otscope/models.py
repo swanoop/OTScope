@@ -91,6 +91,7 @@ class Finding:
     title: str
     description: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    techniques: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

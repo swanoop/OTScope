@@ -31,7 +31,10 @@ TYPE_NAMES = {
     104: "C_TS_NA_1 Test command",
     105: "C_RP_NA_1 Reset process command",
 }
-COMMAND_TYPES = set(range(45, 52)) | set(range(58, 65)) | {100, 101, 102, 103, 104, 105}
+CONTROL_TYPES = set(range(45, 52)) | set(range(58, 65))
+SYSTEM_TYPES = {100, 101, 102, 103, 104}
+RESET_TYPES = {105}
+COMMAND_TYPES = CONTROL_TYPES | SYSTEM_TYPES | RESET_TYPES  # backwards compatibility
 
 
 def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
@@ -45,7 +48,7 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         kind = "S" if (control[0] & 0x03) == 1 else "U"
         return {"frame_type": kind, "request": request, "access": "control"}
 
-    if len(payload) < 12:
+    if len(payload) < 15:
         return None
     asdu = payload[6:]
     type_id = asdu[0]
@@ -63,5 +66,10 @@ def parse(payload: bytes, *, request: bool) -> dict[str, Any] | None:
         "objects": vsq & 0x7F,
         "sequence": bool(vsq & 0x80),
         "request": request,
-        "access": "command" if type_id in COMMAND_TYPES else "telemetry",
+        "access": ("command" if type_id in CONTROL_TYPES and cot == 6 else
+                   "reset" if type_id in RESET_TYPES and cot == 6 else
+                   "system" if type_id in SYSTEM_TYPES and cot == 6 else
+                   "confirmation" if type_id in COMMAND_TYPES and cot in {7, 10} else "telemetry"),
+        "is_activation": cot == 6 and type_id in COMMAND_TYPES,
+        "is_confirmation": cot in {7, 10} and type_id in COMMAND_TYPES,
     }
